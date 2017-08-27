@@ -1,0 +1,348 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CloudFormation template to create a 3 node cassandra cluster
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC in which to create stack
+  SubnetIdA:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet in which to Cassandra instance (Node A [Seed])
+  Ec2InstanceType:
+    Type: String
+    Description: ECS EC2 instance type
+    Default: m4.large
+    AllowedValues: [m4.large, m4.xlarge, m4.2xlarge, m4.4xlarge, m4.10xlarge,
+      c4.large, c4.xlarge, c4.2xlarge, c4.4xlarge, c4.8xlarge, c3.large, c3.xlarge,
+      c3.2xlarge, c3.4xlarge, c3.8xlarge, r3.large, r3.xlarge, r3.2xlarge, r3.4xlarge,
+      r3.8xlarge, i2.xlarge, i2.2xlarge, i2.4xlarge, i2.8xlarge, g2.2xlarge, g2.8xlarge,
+      d2.xlarge, d2.2xlarge, d2.4xlarge, d2.8xlarge]
+    ConstraintDescription: must be a valid EC2 instance type.
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the ECS instances
+  LogRetention:
+    Type: Number
+    Description: Number of days to retain logs for cassandra nodes
+    Default: '1'
+  CloudFormationLogGroup:
+    Type: String
+    Description: The name of a CloudWatch log group to send CloudFormation related logs to
+    Default: 'CloudFormation'
+Mappings:
+  # These are the latest ECS optimized AMIs as of June 2017:
+  #
+  #   amzn-ami-2017.03.e-amazon-ecs-optimized
+  #   ECS agent:    1.14.3
+  #   Docker:       17.03.1-ce
+  #   ecs-init:     1.14.3-1
+  #
+  # You can find the latest available on this page of our documentation:
+  # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-optimized_AMI.html
+  # (note the AMI identifier is region specific)
+  AWSRegionToAMI:
+      us-east-1:
+          AMI: ami-d61027ad
+      us-east-2:
+          AMI: ami-bb8eaede
+      us-west-1:
+          AMI: ami-514e6431
+      us-west-2:
+          AMI: ami-c6f81abe
+      ca-central-1:
+          AMI: ami-32bb0556
+
+Resources:
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EC2 Allowed Ports
+      VpcId: !Ref 'VpcId'
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '7000'
+        ToPort: '7001'
+        CidrIp: '10.0.0.0/16'
+      - IpProtocol: tcp
+        FromPort: '9042'
+        ToPort: '9042'
+        CidrIp: '10.0.0.0/16'
+      - IpProtocol: tcp
+        FromPort: '7199'
+        ToPort: '7199'
+        CidrIp: '10.0.0.0/16'
+      - IpProtocol: tcp
+        FromPort: '9160'
+        ToPort: '9160'
+        CidrIp: '10.0.0.0/16'
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: '10.0.0.0/16'
+      Tags:
+      - Key: Name
+        Value: !Sub 'Cassandra Cluster SG - ${AWS::StackName}'
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: EC2-CloudWatchLogs
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            - logs:DescribeLogStreams
+            Resource:
+            - arn:aws:logs:*:*:*
+      - PolicyName: EC2-Operations
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - ec2:DescribeTags
+            - ec2:AssociateAddress
+            - ec2:DisassociateAddress
+            Resource: '*'
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+      - !Ref 'InstanceRole'
+
+  InstanceLc:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    DependsOn: LogGroup
+    Properties:
+      ImageId: !FindInMap [AWSRegionToAMI, !Ref "AWS::Region", AMI]
+      InstanceType: !Ref 'Ec2InstanceType'
+      AssociatePublicIpAddress: false
+      IamInstanceProfile: !Ref 'InstanceProfile'
+      KeyName: !Ref 'KeyName'
+      SecurityGroups:
+        - !Ref 'InstanceSecurityGroup'
+
+      # 1. Ensure we have the latest version of cf helper scripts
+      # 2. Run all init configs in the meta data section of this resource
+      # 3. Once we are done running all our scripts and they successfully ran, signal success or failure to the ASG
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash
+          yum install -y aws-cfn-bootstrap awslogs jq
+          export AWS_DEFAULT_REGION=$(curl http://169.254.169.254/latest/meta-data/placement/availability-zone | sed s'/.$//')
+          /opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource InstanceLc --configsets full_install
+          source /etc/cassandra-info
+          /opt/aws/bin/cfn-signal -e $? --region ${AWS::Region} --stack ${AWS::StackName} --resource "InstanceAsg$NODE_ID"
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          full_install:
+          - install_cfn
+          - install_logging
+          - configure_docker
+          - configure_instance
+          - configure_cassandra
+          - stop_ecs_agent
+        install_cfn:
+          files:
+            /etc/cfn/cfn-hup.conf:
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+              mode: '000400'
+              owner: root
+              group: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.InstanceLc.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource InstanceLc --configsets full_install
+                runas=root
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                - /etc/cfn/cfn-hup.conf
+                - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+        install_logging:
+          files:
+            "/etc/awslogs/awslogs.conf":
+              mode: '000644'
+              owner: root
+              group: root
+              content: !Sub |
+                [general]
+                state_file = /var/lib/awslogs/agent-state
+
+                [/var/log/dmesg]
+                file = /var/log/dmesg
+                log_group_name = /var/log/dmesg
+                log_stream_name = ${AWS::StackName}
+
+                [/var/log/messages]
+                file = /var/log/messages
+                log_group_name = /var/log/messages
+                log_stream_name = ${AWS::StackName}
+                datetime_format = %b %d %H:%M:%S
+
+                [/var/log/docker]
+                file = /var/log/docker
+                log_group_name = /var/log/docker
+                log_stream_name = ${AWS::StackName}
+                datetime_format = %Y-%m-%dT%H:%M:%S.%f
+
+                [/var/log/cloud-init.log]
+                file = /var/log/cloud-init.log
+                log_group_name = ${CloudFormationLogGroup}
+                log_stream_name = {instance_id}/cloud-init.log
+                datetime_format = 
+                
+                [/var/log/cloud-init-output.log]
+                file = /var/log/cloud-init-output.log
+                log_group_name = ${CloudFormationLogGroup}
+                log_stream_name = {instance_id}/cloud-init-output.log
+                datetime_format = 
+                
+                [/var/log/cfn-init.log]
+                file = /var/log/cfn-init.log
+                log_group_name = ${CloudFormationLogGroup}
+                log_stream_name = {instance_id}/cfn-init.log
+                datetime_format = 
+                
+                [/var/log/cfn-hup.log]
+                file = /var/log/cfn-hup.log
+                log_group_name = ${CloudFormationLogGroup}
+                log_stream_name = {instance_id}/cfn-hup.log
+                datetime_format = 
+                
+                [/var/log/cfn-wire.log]
+                file = /var/log/cfn-wire.log
+                log_group_name = ${CloudFormationLogGroup}
+                log_stream_name = {instance_id}/cfn-wire.log
+                datetime_format =
+            "/etc/init/awslogs.conf":
+              mode: '000644'
+              owner: root
+              group: root
+              content: |
+                #upstart-job
+                description "Configure and start CloudWatch Logs agent on Amazon ECS container instance"
+                author "Amazon Web Services"
+                start on started ecs
+
+                script
+                  exec 2>>/var/log/ecs/cloudwatch-logs-start.log
+                  set -x
+
+                  until curl -s http://169.254.169.254/latest/meta-data
+                  do
+                      sleep 1
+                  done
+
+                  region=$(curl http://169.254.169.254/latest/meta-data/placement/availability-zone | sed s'/.$//')
+                  # Replace region with actual region
+                  sed -i -e "s/region = us-east-1/region = $region/g" /etc/awslogs/awscli.conf
+                  
+                  service awslogs start
+                  chkconfig awslogs on
+                end script
+        configure_docker:
+          commands:
+            01_docker_users:
+              command: !Sub |
+                #!/bin/bash
+                
+                # Create a docker user that has access to specific things on the host instead of running as root
+                DOCKER_USER_ID=5001
+                useradd -u $DOCKER_USER_ID -o -c "" docker-user
+                CASSANDRA_USER_ID=999
+                useradd -u $CASSANDRA_USER_ID -o -c "" cassandra
+        configure_instance:
+          commands:
+            01_get_config:
+              command: !Sub |
+                #!/bin/bash
+                set -e
+                
+                instance_id=$(curl http://169.254.169.254/latest/meta-data/instance-id)
+                tags=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$instance_id")
+                NODE_ID=$(echo $tags | jq --raw-output '.Tags[] | select(.Key == "NodeId") | .Value')
+
+                echo "NODE_ID=$NODE_ID" >> /etc/cassandra-info
+                echo "INSTANCE_ID=$instance_id" >> /etc/cassandra-info
+        configure_cassandra:
+          files:
+            "/opt/cassandra-setup":
+              mode: '000755'
+              owner: root
+              group: root
+              content: !Sub |
+                #!/bin/bash
+                set -e
+                echo "hello world"
+
+          commands:
+            01_configure_cassandra:
+              command: !Sub |
+                #!/bin/bash
+                /opt/cassandra-setup                                                                                                                  
+        stop_ecs_agent:
+          commands:
+            01_stop:
+              command: !Sub |
+                #!/bin/bash
+                set -e
+
+                sudo yum remove -y ecs-init
+                echo "Stopped and Removed ECS agent" >> /var/log/setup.log
+  InstanceAsga:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: 
+        - !Ref 'SubnetIdA'
+      LaunchConfigurationName: !Ref 'InstanceLc'
+      MinSize: 1
+      MaxSize: 1
+      DesiredCapacity: 1      
+      Tags:
+      - Key: Name
+        Value: !Sub 'Cassandra Cluster Instance - ${AWS::StackName}'
+        PropagateAtLaunch: 'true'
+      - Key: NodeId
+        Value: 'a'
+        PropagateAtLaunch: 'true'
+    CreationPolicy:
+      # Ensure we wait for a signal from each instance to know when its done bootstrapping
+      ResourceSignal:
+        Timeout: PT15M
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: !Ref 'LogRetention'
+      LogGroupName: !Sub '${AWS::StackName}'    
+Outputs:
+  # VpcId is required by various AWS Resources, so let the dependant stack refer to the VpcId
+  InstanceSecurityGroup:
+    Description: The ID of the security group which EC2 instances belong to
+    Value: !GetAtt [InstanceSecurityGroup, GroupId]
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceSecurityGroupId'
