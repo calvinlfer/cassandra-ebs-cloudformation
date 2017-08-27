@@ -7,6 +7,10 @@ Parameters:
   SubnetIdA:
     Type: AWS::EC2::Subnet::Id
     Description: Subnet in which to Cassandra instance (Node A [Seed])
+  PrivateIpA:
+    Type: String
+    Description: A private IP that resides in the range of Subnet A (must not be already taken)
+    ConstraintDescription: must be a valid IP
   Ec2InstanceType:
     Type: String
     Description: ECS EC2 instance type
@@ -28,6 +32,16 @@ Parameters:
     Type: String
     Description: The name of a CloudWatch log group to send CloudFormation related logs to
     Default: 'CloudFormation'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Node A"
+        Parameters:
+          - SubnetIdA
+          - PrivateIpA
+
 Mappings:
   # These are the latest ECS optimized AMIs as of June 2017:
   #
@@ -118,6 +132,7 @@ Resources:
             - ec2:AssociateAddress
             - ec2:DisassociateAddress
             Resource: '*'
+
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
@@ -320,6 +335,7 @@ Resources:
 
                 stop ecs
                 echo "Stopped ECS agent" >> /var/log/setup.log
+
   InstanceAsga:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
@@ -340,6 +356,17 @@ Resources:
       # Ensure we wait for a signal from each instance to know when its done bootstrapping
       ResourceSignal:
         Timeout: PT15M
+
+  ENIa:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: Elastic Network Interface for use with Node A to obtain a stable IP (associated when the EC2 instance starts up)
+      SubnetId: !Ref 'SubnetIdA'
+      PrivateIpAddress: !Ref 'PrivateIpA'
+      Tags:
+      - Key: Name
+        Value: !Sub 'Cassandra Cluster ENI for Node A - ${AWS::StackName}'
+
   LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
