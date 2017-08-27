@@ -239,6 +239,12 @@ Resources:
                 log_group_name = ${CloudFormationLogGroup}
                 log_stream_name = {instance_id}/cfn-wire.log
                 datetime_format =
+
+                [/var/log/setup.log]
+                file = /var/log/setup.log
+                log_group_name = ${CloudFormationLogGroup}
+                log_stream_name = {instance_id}/setup.log
+                datetime_format =
             "/etc/init/awslogs.conf":
               mode: '000644'
               owner: root
@@ -312,8 +318,8 @@ Resources:
                 #!/bin/bash
                 set -e
 
-                sudo yum remove -y ecs-init
-                echo "Stopped and Removed ECS agent" >> /var/log/setup.log
+                sudo stop ecs
+                echo "Stopped ECS agent" >> /var/log/setup.log
   InstanceAsga:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
