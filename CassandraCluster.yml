@@ -318,7 +318,7 @@ Resources:
                 #!/bin/bash
                 set -e
 
-                sudo stop ecs
+                stop ecs
                 echo "Stopped ECS agent" >> /var/log/setup.log
   InstanceAsga:
     Type: AWS::AutoScaling::AutoScalingGroup
