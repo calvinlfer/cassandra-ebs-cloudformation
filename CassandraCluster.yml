@@ -6,7 +6,7 @@ Parameters:
     Description: VPC in which to create stack
   SubnetIdA:
     Type: AWS::EC2::Subnet::Id
-    Description: Subnet in which to Cassandra instance (Node A [Seed])
+    Description: Subnet in which to spawn a Cassandra instance (Node A [Seed])
   PrivateIpA:
     Type: String
     Description: A private IP that resides in the range of Subnet A (must not be already taken)
@@ -323,7 +323,8 @@ Resources:
 
                 source /etc/cassandra-info
                 echo "Associating Elastic Network Interface $ENI_ID to this EC2 Instance ($INSTANCE_ID)" >> /var/log/setup.log
-                aws ec2 attach-network-interface --region $REGION --instance-id $INSTANCE_ID --device-index 2 --network-interface-id $ENI_ID >> /var/log/setup.log
+                # Choosing an incorrect device index can cause this command to fail
+                aws ec2 attach-network-interface --region $REGION --instance-id $INSTANCE_ID --device-index 1 --network-interface-id $ENI_ID --output text >> /var/log/setup.log
                 echo "Successfully associated ENI $ENI_ID with EC2 Instance $INSTANCE_ID" >> /var/log/setup.log
         configure_cassandra:
           files:
@@ -348,8 +349,8 @@ Resources:
                 #!/bin/bash
                 set -e
 
-                stop ecs
-                echo "Stopped ECS agent" >> /var/log/setup.log
+                # yum remove -y ecs-init
+                echo "Stopped and Removed ECS agent" >> /var/log/setup.log
 
   InstanceAsga:
     Type: AWS::AutoScaling::AutoScalingGroup
