@@ -7,6 +7,9 @@ Parameters:
   SubnetIdA:
     Type: AWS::EC2::Subnet::Id
     Description: Subnet in which to spawn a Cassandra instance (Node A [Seed])
+  AvailabilityZoneA:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: Availability Zone that matches Node A's subnet in which an EBS volume will be created
   PrivateIpA:
     Type: String
     Description: A private IP that resides in the range of Subnet A (must not be already taken)
@@ -41,6 +44,7 @@ Metadata:
         Parameters:
           - SubnetIdA
           - PrivateIpA
+          - AvailabilityZoneA
 
 Mappings:
   # These are the latest ECS optimized AMIs as of June 2017:
@@ -312,10 +316,12 @@ Resources:
                 tags=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$instance_id")
                 NODE_ID=$(echo $tags | jq --raw-output '.Tags[] | select(.Key == "NodeId") | .Value')
                 ENI_ID=$(echo $tags | jq --raw-output '.Tags[] | select(.Key == "EniId") | .Value')
+                EBS_ID=$(echo $tags | jq --raw-output '.Tags[] | select(.Key == "EbsId") | .Value')
                 REGION=$(curl http://169.254.169.254/latest/meta-data/placement/availability-zone | sed s'/.$//')
 
                 echo "NODE_ID=$NODE_ID" >> /etc/cassandra-info
                 echo "ENI_ID=$ENI_ID" >> /etc/cassandra-info
+                echo "EBS_ID=$EBS_ID" >> /etc/cassandra-info
                 echo "INSTANCE_ID=$instance_id" >> /etc/cassandra-info
                 echo "REGION=$REGION" >> /etc/cassandra-info
             02_associate_eni:
@@ -325,9 +331,23 @@ Resources:
 
                 source /etc/cassandra-info
                 echo "Associating Elastic Network Interface $ENI_ID to this EC2 Instance ($INSTANCE_ID)" >> /var/log/setup.log
+
                 # Choosing an incorrect device index can cause this command to fail
                 aws ec2 attach-network-interface --region $REGION --instance-id $INSTANCE_ID --device-index 1 --network-interface-id $ENI_ID --output text >> /var/log/setup.log
+
                 echo "Successfully associated ENI $ENI_ID with EC2 Instance $INSTANCE_ID" >> /var/log/setup.log
+            03_associate_ebs:
+              command: !Sub |
+                #!/bin/bash
+                set -e
+
+                source /etc/cassandra-info
+                echo "Associating Elastic Block Volume $EBS_ID to this EC2 Instance ($INSTANCE_ID)" >> /var/log/setup.log
+
+                # Choosing an availability zone that does not match the subnet of the EC2 instance will cause this command to fail
+                aws ec2 attach-volume --instance-id $INSTANCE_ID --volume-id $EBS_ID --device /dev/xvdf >> /var/log/setup.log
+
+                echo "Successfully associated EBS $EBS_ID with EC2 Instance $INSTANCE_ID" >> /var/log/setup.log
         configure_cassandra:
           files:
             "/opt/cassandra-setup":
@@ -356,7 +376,9 @@ Resources:
 
   InstanceAsga:
     Type: AWS::AutoScaling::AutoScalingGroup
-    DependsOn: ENIa
+    DependsOn:
+      - ENIa
+      - EBSa
     Properties:
       VPCZoneIdentifier: 
         - !Ref 'SubnetIdA'
@@ -374,6 +396,9 @@ Resources:
       - Key: EniId
         Value: !Ref 'ENIa'
         PropagateAtLaunch: 'true'
+      - Key: EbsId
+        Value: !Ref 'EBSa'
+        PropagateAtLaunch: 'true'
     CreationPolicy:
       # Ensure we wait for a signal from each instance to know when its done bootstrapping
       ResourceSignal:
@@ -388,6 +413,18 @@ Resources:
       Tags:
       - Key: Name
         Value: !Sub 'Cassandra Cluster ENI for Node A - ${AWS::StackName}'
+
+  EBSa:
+    Type: AWS::EC2::Volume
+    Properties:
+      AvailabilityZone: !Ref 'AvailabilityZoneA'
+      Encrypted: false
+      Iops: 100
+      Size: 100
+      VolumeType: "io1"
+      Tags:
+      - Key: Name
+        Value: !Sub 'Cassandra Cluster EBS for Node A - ${AWS::StackName}'
 
   LogGroup:
     Type: AWS::Logs::LogGroup
