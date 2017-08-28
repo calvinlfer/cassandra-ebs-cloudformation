@@ -133,6 +133,8 @@ Resources:
             - ec2:DisassociateAddress
             - ec2:AttachNetworkInterface  # For ENI
             - ec2:DetachNetworkInterface
+            - ec2:AttachVolume            # For EBS
+            - ec2:DetachVolume
             Resource: '*'
 
   InstanceProfile:
