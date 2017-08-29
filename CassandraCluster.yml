@@ -7,12 +7,22 @@ Parameters:
   SubnetIdA:
     Type: AWS::EC2::Subnet::Id
     Description: Subnet in which to spawn a Cassandra instance (Node A [Seed])
+  SubnetIdB:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet in which to spawn a Cassandra instance (Node B)
   AvailabilityZoneA:
     Type: AWS::EC2::AvailabilityZone::Name
     Description: Availability Zone that matches Node A's subnet in which an EBS volume will be created
+  AvailabilityZoneB:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: Availability Zone that matches Node B's subnet in which an EBS volume will be created
   PrivateIpA:
     Type: String
     Description: A private IP that resides in the range of Subnet A (must not be already taken)
+    ConstraintDescription: must be a valid IP
+  PrivateIpB:
+    Type: String
+    Description: A private IP that resides in the range of Subnet B (must not be already taken)
     ConstraintDescription: must be a valid IP
   Ec2InstanceType:
     Type: String
@@ -50,6 +60,12 @@ Metadata:
           - SubnetIdA
           - PrivateIpA
           - AvailabilityZoneA
+      - Label:
+          default: "Node B"
+        Parameters:
+          - SubnetIdB
+          - PrivateIpB
+          - AvailabilityZoneB
 
 Mappings:
   # These are the latest ECS optimized AMIs as of June 2017:
@@ -410,6 +426,7 @@ Resources:
                 --log-opt awslogs-stream="node$NODE_ID" \
                 -e CASSANDRA_SEEDS="$SEED_IP" \
                 -e CASSANDRA_BROADCAST_ADDRESS="$NODE_IP" \
+                -e CASSANDRA_LISTEN_ADDRESS="$NODE_IP" \
                 -v $cassandra_folder:/var/lib/cassandra \
                 cassandra:3.11 >> /var/log/docker
 
@@ -431,8 +448,8 @@ Resources:
   InstanceAsgA:
     Type: AWS::AutoScaling::AutoScalingGroup
     DependsOn:
-      - "ENIA"
-      - "EBSA"
+      - 'ENIA'
+      - 'EBSA'
     Properties:
       VPCZoneIdentifier: 
         - !Ref 'SubnetIdA'
@@ -464,6 +481,42 @@ Resources:
       ResourceSignal:
         Timeout: PT15M
 
+  InstanceAsgB:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - 'ENIB'
+      - 'EBSB'
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref 'SubnetIdB'
+      LaunchConfigurationName: !Ref 'InstanceLc'
+      MinSize: 1
+      MaxSize: 1
+      DesiredCapacity: 1
+      Tags:
+      - Key: Name
+        Value: !Sub 'Cassandra Cluster Instance - ${AWS::StackName}'
+        PropagateAtLaunch: 'true'
+      - Key: NodeId
+        Value: 'B'
+        PropagateAtLaunch: 'true'
+      - Key: EniId
+        Value: !Ref 'ENIB'
+        PropagateAtLaunch: 'true'
+      - Key: EbsId
+        Value: !Ref 'EBSB'
+        PropagateAtLaunch: 'true'
+      - Key: SeedIp
+        Value: !Ref 'PrivateIpA'
+        PropagateAtLaunch: 'true'
+      - Key: NodeIp
+        Value: !Ref 'PrivateIpB'
+        PropagateAtLaunch: 'true'
+    CreationPolicy:
+      # Ensure we wait for a signal from each instance to know when its done bootstrapping
+      ResourceSignal:
+        Timeout: PT15M
+
   ENIA:
     Type: AWS::EC2::NetworkInterface
     Properties:
@@ -486,11 +539,35 @@ Resources:
       - Key: Name
         Value: !Sub 'Cassandra Cluster EBS for Node A - ${AWS::StackName}'
 
+  ENIB:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: Elastic Network Interface for use with Node A to obtain a stable IP (associated when the EC2 instance starts up)
+      SubnetId: !Ref 'SubnetIdB'
+      PrivateIpAddress: !Ref 'PrivateIpB'
+      Tags:
+      - Key: Name
+        Value: !Sub 'Cassandra Cluster ENI for Node B - ${AWS::StackName}'
+
+  EBSB:
+    Type: AWS::EC2::Volume
+    Properties:
+      AvailabilityZone: !Ref 'AvailabilityZoneB'
+      Encrypted: false
+      Iops: 100
+      Size: 100
+      VolumeType: "io1"
+      Tags:
+      - Key: Name
+        Value: !Sub 'Cassandra Cluster EBS for Node B - ${AWS::StackName}'
+
+
   LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       RetentionInDays: !Ref 'LogRetention'
-      LogGroupName: !Sub '${AWS::StackName}'    
+      LogGroupName: !Sub '${AWS::StackName}'
+
 Outputs:
   # VpcId is required by various AWS Resources, so let the dependant stack refer to the VpcId
   InstanceSecurityGroup:
