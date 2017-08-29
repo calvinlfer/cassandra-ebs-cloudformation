@@ -24,6 +24,11 @@ Parameters:
       r3.8xlarge, i2.xlarge, i2.2xlarge, i2.4xlarge, i2.8xlarge, g2.2xlarge, g2.8xlarge,
       d2.xlarge, d2.2xlarge, d2.4xlarge, d2.8xlarge]
     ConstraintDescription: must be a valid EC2 instance type.
+  OptimizeForEBS:
+    Type: String
+    Description: Explicitly enable EBS optimized instances
+    Default: true
+    AllowedValues: [true, false]
   KeyName:
     Type: AWS::EC2::KeyPair::KeyName
     Description: Name of an existing EC2 KeyPair to enable SSH access to the ECS instances
@@ -154,6 +159,7 @@ Resources:
     Properties:
       ImageId: !FindInMap [AWSRegionToAMI, !Ref "AWS::Region", AMI]
       InstanceType: !Ref 'Ec2InstanceType'
+      EbsOptimized: !Ref 'OptimizeForEBS'
       AssociatePublicIpAddress: false
       IamInstanceProfile: !Ref 'InstanceProfile'
       KeyName: !Ref 'KeyName'
@@ -387,7 +393,25 @@ Resources:
               content: !Sub |
                 #!/bin/bash
                 set -e
-                echo "hello world"
+
+                source /etc/cassandra-info
+
+                # Set folder permissions for Cassandra to own the EBS volume
+                cassandra_folder=/mnt/ebs/cassandra
+                if [ ! -d "$cassandra_folder" ]; then
+                  mkdir -p $cassandra_folder
+                fi
+                chown -R cassandra:cassandra $cassandra_folder
+
+                # Launch Cassandra
+                docker run -d --privileged --name cassandra --restart always --network=host -u $(id -u cassandra) \
+                --log-driver=awslogs --log-opt awslogs-region="${AWS::Region}" \
+                --log-opt awslogs-group="${LogGroup}" \
+                --log-opt awslogs-stream="node$NODE_ID" \
+                -e CASSANDRA_SEEDS="$SEED_IP" \
+                -e CASSANDRA_BROADCAST_ADDRESS="$NODE_IP" \
+                -v $cassandra_folder:/var/lib/cassandra \
+                cassandra:3.11 >> /var/log/docker
 
           commands:
             01_configure_cassandra:
