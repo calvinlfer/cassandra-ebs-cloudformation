@@ -345,7 +345,7 @@ Resources:
                 echo "Associating Elastic Block Volume $EBS_ID to this EC2 Instance ($INSTANCE_ID)" >> /var/log/setup.log
 
                 # Choosing an availability zone that does not match the subnet of the EC2 instance will cause this command to fail
-                aws ec2 attach-volume --instance-id $INSTANCE_ID --volume-id $EBS_ID --device /dev/xvdf >> /var/log/setup.log
+                aws ec2 attach-volume --instance-id $INSTANCE_ID --volume-id $EBS_ID --device /dev/xvdf --output text >> /var/log/setup.log
 
                 echo "Successfully associated EBS $EBS_ID with EC2 Instance $INSTANCE_ID" >> /var/log/setup.log
         configure_cassandra:
