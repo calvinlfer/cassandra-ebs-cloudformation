@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: AWS CloudFormation template to create a 3 node cassandra cluster
+Description: AWS CloudFormation template to create a 3 node cassandra cluster backed by EBS volumes
 Parameters:
   VpcId:
     Type: AWS::EC2::VPC::Id
@@ -314,14 +314,21 @@ Resources:
                 
                 instance_id=$(curl http://169.254.169.254/latest/meta-data/instance-id)
                 tags=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$instance_id")
+
                 NODE_ID=$(echo $tags | jq --raw-output '.Tags[] | select(.Key == "NodeId") | .Value')
                 ENI_ID=$(echo $tags | jq --raw-output '.Tags[] | select(.Key == "EniId") | .Value')
                 EBS_ID=$(echo $tags | jq --raw-output '.Tags[] | select(.Key == "EbsId") | .Value')
+
+                SEED_IP=$(echo $tags | jq --raw-output '.Tags[] | select(.Key == "SeedIp") | .Value')
+                NODE_IP=$(echo $tags | jq --raw-output '.Tags[] | select(.Key == "NodeIp") | .Value')
+
                 REGION=$(curl http://169.254.169.254/latest/meta-data/placement/availability-zone | sed s'/.$//')
 
                 echo "NODE_ID=$NODE_ID" >> /etc/cassandra-info
                 echo "ENI_ID=$ENI_ID" >> /etc/cassandra-info
                 echo "EBS_ID=$EBS_ID" >> /etc/cassandra-info
+                echo "SEED_IP=$SEED_IP" >> /etc/cassandra-info
+                echo "NODE_IP=$NODE_IP" >> /etc/cassandra-info
                 echo "INSTANCE_ID=$instance_id" >> /etc/cassandra-info
                 echo "REGION=$REGION" >> /etc/cassandra-info
             02_associate_eni:
@@ -347,7 +354,30 @@ Resources:
                 # Choosing an availability zone that does not match the subnet of the EC2 instance will cause this command to fail
                 aws ec2 attach-volume --instance-id $INSTANCE_ID --volume-id $EBS_ID --device /dev/xvdf --output text >> /var/log/setup.log
 
-                echo "Successfully associated EBS $EBS_ID with EC2 Instance $INSTANCE_ID" >> /var/log/setup.log
+                echo "Successfully associated EBS $EBS_ID with EC2 Instance $INSTANCE_ID (mounted at /dev/xvdf)" >> /var/log/setup.log
+                # Add a delay to allow the EBS volume to be physically attached so proceeding steps will not fail
+                sleep 10
+            04_mount_ebs:
+              command: !Sub |
+                #!/bin/bash
+
+                mkdir -p /mnt/ebs
+
+                # Non-destructive mount (see https://stackoverflow.com/questions/28792272/attaching-and-mounting-existing-ebs-volume-to-ec2-instance-filesystem-issue)
+                # Alternatively, I could have used an AWS Tag to check if another instance owned this before and decide
+                # to format it like that, but then I would have to mutate the tags
+                mount /dev/xvdf /mnt/ebs -t ext4 >> /var/log/setup.log
+
+                # mount_status == 32 indicates an unformatted EBS volume
+                mount_status=$(echo $?)
+                if [ $mount_status -eq 32 ]; then
+                  # format then mount
+                  echo "EBS volume does not have a proper filesystem: booting up for the first time or something has gone terribly wrong" >> /var/log/setup.log
+                  echo "Formatting EBS volume" >> /var/log/setup.log
+                  mkfs -t ext4 /dev/xvdf >> /var/log/setup.log
+                  mount /dev/xvdf /mnt/ebs -t ext4 >> /var/log/setup.log
+                fi
+
         configure_cassandra:
           files:
             "/opt/cassandra-setup":
@@ -374,11 +404,11 @@ Resources:
                 # yum remove -y ecs-init
                 echo "Stopped and Removed ECS agent" >> /var/log/setup.log
 
-  InstanceAsga:
+  InstanceAsgA:
     Type: AWS::AutoScaling::AutoScalingGroup
     DependsOn:
-      - ENIa
-      - EBSa
+      - "ENIA"
+      - "EBSA"
     Properties:
       VPCZoneIdentifier: 
         - !Ref 'SubnetIdA'
@@ -391,20 +421,26 @@ Resources:
         Value: !Sub 'Cassandra Cluster Instance - ${AWS::StackName}'
         PropagateAtLaunch: 'true'
       - Key: NodeId
-        Value: 'a'
+        Value: 'A'
         PropagateAtLaunch: 'true'
       - Key: EniId
-        Value: !Ref 'ENIa'
+        Value: !Ref 'ENIA'
         PropagateAtLaunch: 'true'
       - Key: EbsId
-        Value: !Ref 'EBSa'
+        Value: !Ref 'EBSA'
+        PropagateAtLaunch: 'true'
+      - Key: SeedIp
+        Value: !Ref 'PrivateIpA'
+        PropagateAtLaunch: 'true'
+      - Key: NodeIp
+        Value: !Ref 'PrivateIpA'
         PropagateAtLaunch: 'true'
     CreationPolicy:
       # Ensure we wait for a signal from each instance to know when its done bootstrapping
       ResourceSignal:
         Timeout: PT15M
 
-  ENIa:
+  ENIA:
     Type: AWS::EC2::NetworkInterface
     Properties:
       Description: Elastic Network Interface for use with Node A to obtain a stable IP (associated when the EC2 instance starts up)
@@ -414,7 +450,7 @@ Resources:
       - Key: Name
         Value: !Sub 'Cassandra Cluster ENI for Node A - ${AWS::StackName}'
 
-  EBSa:
+  EBSA:
     Type: AWS::EC2::Volume
     Properties:
       AvailabilityZone: !Ref 'AvailabilityZoneA'
