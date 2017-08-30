@@ -10,12 +10,18 @@ Parameters:
   SubnetIdB:
     Type: AWS::EC2::Subnet::Id
     Description: Subnet in which to spawn a Cassandra instance (Node B)
+  SubnetIdC:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet in which to spawn a Cassandra instance (Node C)
   AvailabilityZoneA:
     Type: AWS::EC2::AvailabilityZone::Name
     Description: Availability Zone that matches Node A's subnet in which an EBS volume will be created
   AvailabilityZoneB:
     Type: AWS::EC2::AvailabilityZone::Name
     Description: Availability Zone that matches Node B's subnet in which an EBS volume will be created
+  AvailabilityZoneC:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: Availability Zone that matches Node C's subnet in which an EBS volume will be created
   PrivateIpA:
     Type: String
     Description: A private IP that resides in the range of Subnet A (must not be already taken)
@@ -23,6 +29,10 @@ Parameters:
   PrivateIpB:
     Type: String
     Description: A private IP that resides in the range of Subnet B (must not be already taken)
+    ConstraintDescription: must be a valid IP
+  PrivateIpC:
+    Type: String
+    Description: A private IP that resides in the range of Subnet C (must not be already taken)
     ConstraintDescription: must be a valid IP
   Ec2InstanceType:
     Type: String
@@ -66,7 +76,12 @@ Metadata:
           - SubnetIdB
           - PrivateIpB
           - AvailabilityZoneB
-
+      - Label:
+          default: "Node C"
+        Parameters:
+          - SubnetIdC
+          - PrivateIpC
+          - AvailabilityZoneC
 Mappings:
   # These are the latest ECS optimized AMIs as of June 2017:
   #
@@ -487,6 +502,7 @@ Resources:
     DependsOn:
       - 'ENIB'
       - 'EBSB'
+      - 'InstanceAsgA'
     Properties:
       VPCZoneIdentifier:
         - !Ref 'SubnetIdB'
@@ -518,6 +534,43 @@ Resources:
       ResourceSignal:
         Timeout: PT15M
 
+  InstanceAsgC:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - 'ENIC'
+      - 'EBSC'
+      - 'InstanceAsgB'
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref 'SubnetIdC'
+      LaunchConfigurationName: !Ref 'InstanceLc'
+      MinSize: 1
+      MaxSize: 1
+      DesiredCapacity: 1
+      Tags:
+      - Key: Name
+        Value: !Sub 'Cassandra Cluster Instance - ${AWS::StackName}'
+        PropagateAtLaunch: 'true'
+      - Key: NodeId
+        Value: 'C'
+        PropagateAtLaunch: 'true'
+      - Key: EniId
+        Value: !Ref 'ENIC'
+        PropagateAtLaunch: 'true'
+      - Key: EbsId
+        Value: !Ref 'EBSC'
+        PropagateAtLaunch: 'true'
+      - Key: SeedIp
+        Value: !Ref 'PrivateIpA'
+        PropagateAtLaunch: 'true'
+      - Key: NodeIp
+        Value: !Ref 'PrivateIpC'
+        PropagateAtLaunch: 'true'
+    CreationPolicy:
+      # Ensure we wait for a signal from each instance to know when its done bootstrapping
+      ResourceSignal:
+        Timeout: PT15M
+
   ENIA:
     Type: AWS::EC2::NetworkInterface
     Properties:
@@ -543,7 +596,7 @@ Resources:
   ENIB:
     Type: AWS::EC2::NetworkInterface
     Properties:
-      Description: Elastic Network Interface for use with Node A to obtain a stable IP (associated when the EC2 instance starts up)
+      Description: Elastic Network Interface for use with Node B to obtain a stable IP (associated when the EC2 instance starts up)
       SubnetId: !Ref 'SubnetIdB'
       PrivateIpAddress: !Ref 'PrivateIpB'
       Tags:
@@ -562,6 +615,27 @@ Resources:
       - Key: Name
         Value: !Sub 'Cassandra Cluster EBS for Node B - ${AWS::StackName}'
 
+  ENIC:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: Elastic Network Interface for use with Node C to obtain a stable IP (associated when the EC2 instance starts up)
+      SubnetId: !Ref 'SubnetIdC'
+      PrivateIpAddress: !Ref 'PrivateIpC'
+      Tags:
+      - Key: Name
+        Value: !Sub 'Cassandra Cluster ENI for Node C - ${AWS::StackName}'
+
+  EBSC:
+    Type: AWS::EC2::Volume
+    Properties:
+      AvailabilityZone: !Ref 'AvailabilityZoneC'
+      Encrypted: false
+      Iops: 100
+      Size: 100
+      VolumeType: "io1"
+      Tags:
+      - Key: Name
+        Value: !Sub 'Cassandra Cluster EBS for Node C - ${AWS::StackName}'
 
   LogGroup:
     Type: AWS::Logs::LogGroup
