@@ -19,7 +19,7 @@ This is a single AWS region (single C* datacenter) multi-AZ (multiple C* racks) 
 * EBS volume selection (commit log on one volume, data on another volume)
 * Node-to-node encryption 
 * Client-to-node encryption
-* Monitoring (pull JMX metrics into CloudWatch Metrics into Prometheus)
+* Monitoring (pull JMX metrics into CloudWatch Metrics visualized by Grafana)
 * Repair (via [Cassandra Reaper](https://github.com/thelastpickle/cassandra-reaper))
 
 **Note:** This is a work-in-progress
