@@ -9,6 +9,10 @@ will come back up and re-attach the EBS volumes to re-gain their previous state 
 same IP and reconnect back into the cluster. We create an Auto-Scaling-Group per Cassandra node to allow this stateful
 behavior and leverage and EBS-ENI pair per Cassandra node. 
 
+### Cluster details ###
+This is a single AWS region (single C* datacenter) multi-AZ (multiple C* racks) deployment so we make use of the 
+`Ec2Snitch`. The cluster consists of 3 nodes where each node resides in a single AWS Availability Zone.
+
 ### To-do ###
 * OS optimizations
 * Cassandra optimizations 

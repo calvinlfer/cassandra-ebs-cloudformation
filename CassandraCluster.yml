@@ -437,12 +437,14 @@ Resources:
                 # Launch Cassandra
                 # if you listen on a particular interface, it will automatically broadcast on that interface
                 # if you listen on all interfaces, you must specify a specific interface to broadcast on (via CASSANDRA_BROADCAST_ADDRESS)
+                # using the EC2 snitch for a single region (C* datacenter), multi-AZ (C* multi-rack) cluster (https://wiki.apache.org/cassandra/StorageConfiguration)
                 docker run -d --privileged --name cassandra --restart always --network=host -u $(id -u cassandra) \
                 --log-driver=awslogs --log-opt awslogs-region="${AWS::Region}" \
                 --log-opt awslogs-group="${LogGroup}" \
                 --log-opt awslogs-stream="node$NODE_ID" \
                 -e CASSANDRA_SEEDS="$SEED_IP" \
                 -e CASSANDRA_LISTEN_ADDRESS="$NODE_IP" \
+                -e CASSANDRA_ENDPOINT_SNITCH="org.apache.cassandra.locator.Ec2Snitch" \
                 -v $cassandra_folder:/var/lib/cassandra \
                 cassandra:3.11 >> /var/log/docker
 
